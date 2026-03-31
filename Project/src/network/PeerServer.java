@@ -203,7 +203,7 @@ public class PeerServer implements Runnable {
 
     private void sendFile(BufferedWriter out, String filename, PeerSession session) throws Exception {
 
-        byte[] data = FileManager.readFile("shared/" + filename);
+        byte[] data = FileManager.readFile("Shared/" + filename);
         String hash = FileManager.computeHash(data);
 
         byte[] signature = SignatureUtils.sign(

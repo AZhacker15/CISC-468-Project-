@@ -1,20 +1,35 @@
 import crypto.KeyManager;
 import discovery.MDNSService;
+import network.PeerClient;
 import network.PeerServer;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.file.Paths;
 
 public class Main {
     public static void main(String[] args) throws Exception {
-        KeyManager keyManager = new KeyManager();
-        keyManager.loadOrCreateKeys();
+        KeyManager km = new KeyManager();
+        km.loadOrCreateKeys();
+        System.out.println(Paths.get("shared").toAbsolutePath());
+        PeerClient client = new PeerClient(km);
+       // System.out.println("test1");
+        client.connect("172.20.10.4", 5001);
+        //System.out.println("test2");
+        BufferedReader console = new BufferedReader(
+                new InputStreamReader(System.in));
 
-        PeerServer server = new PeerServer(5001, keyManager);
-        new Thread(server).start();
+        while (true) {
+            System.out.print("\nCommand (list/get <file>): ");
+            String cmd = console.readLine();
 
-        MDNSService discovery = new MDNSService(5001);
+            if (cmd.equals("list")) {
+                client.requestFileList();
+            }
+            else if (cmd.startsWith("get ")) {
+                client.requestFile(cmd.substring(4));
+            }
+        }
 
-        discovery.registerService();
-        discovery.discoverPeers();
-
-        System.out.println("Peer started...");
     }
 }
