@@ -1,6 +1,10 @@
+import base64
 import socket
 import threading
 import json
+
+from crypto_util import generate_ephemeral_keypair, serialize_ephemeral_public, load_ephemeral_public, \
+    derive_shared_key, load_public_key, verify_signature, sign_data, serialize_public_key
 
 BUFFER_SIZE = 4096
 
@@ -94,13 +98,55 @@ class NetworkPeer:
             except socket.timeout:
                 continue  # just keep listening
 
-    def connect_to_peer(self, peer_host, peer_port):
+    def connect_to_peer(self, peer_host, peer_port, private_key, public_key):
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client.settimeout(5)
         client.connect((peer_host, peer_port))
+
+        eph_private, eph_public = generate_ephemeral_keypair()
+        client.eph_private = eph_private
+
+        eph_pub_bytes = serialize_ephemeral_public(eph_public)
+
+        signature = sign_data(private_key, eph_pub_bytes)
+
+        send_json(client, {
+            "type": "KEY_EXCHANGE",
+            "eph_key": base64.b64encode(eph_pub_bytes).decode(),
+            "identity_key": base64.b64encode(
+                serialize_public_key(public_key)
+            ).decode(),
+            "signature": base64.b64encode(signature).decode()
+        })
+
+        response = recv_json(client)
+
+        if not response or response.get("type") != "KEY_EXCHANGE_REPLY":
+            print("ERROR: Key exchange failed")
+            client.close()
+            return None
+
+        peer_eph_bytes = base64.b64decode(response["eph_key"])
+        peer_identity_bytes = base64.b64decode(response["identity_key"])
+        peer_signature = base64.b64decode(response["signature"])
+
+        peer_identity_key = load_public_key(peer_identity_bytes)
+
+        if not verify_signature(peer_identity_key, peer_eph_bytes, peer_signature):
+            print("[SECURITY] Server authentication failed!")
+            client.close()
+            return None
+
+        peer_public_key = load_ephemeral_public(peer_eph_bytes)
+
+        session_key = derive_shared_key(eph_private, peer_public_key)
+        client.session_key = session_key
+
         with self.lock:
             self.connections.append(client)
-        print(f"[CONNECTED] to {peer_host}:{peer_port}")
+
+        print(f"[CONNECTED + AUTH + PFS] to {peer_host}:{peer_port}")
+
         return client
 
     def remove_connection(self, conn):
