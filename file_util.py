@@ -10,6 +10,7 @@ def ensure_storage():
 
 
 def get_file_path(filename):
+    filename = os.path.basename(filename)
     return os.path.join(STORAGE_DIR, filename)
 
 
