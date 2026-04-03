@@ -29,9 +29,6 @@ public class PeerClient {
         this.keyManager = keyManager;
     }
 
-    // =========================
-    // CONNECT TO PEER
-    // =========================
     public void connect(String host, int port) throws Exception {
         socket = new Socket(host, port);
 
@@ -43,14 +40,9 @@ public class PeerClient {
         System.out.println("Connected to peer");
 
         sendHello();
-
-        // Start listener thread
         new Thread(this::listen).start();
     }
 
-    // =========================
-    // SEND HELLO
-    // =========================
     private void sendHello() throws Exception {
         JSONObject payload = new JSONObject();
 
@@ -60,9 +52,6 @@ public class PeerClient {
         send(new Message(MessageType.HELLO, payload));
     }
 
-    // =========================
-    // LISTEN FOR RESPONSES
-    // =========================
     private void listen() {
         try {
             String line;
@@ -77,16 +66,9 @@ public class PeerClient {
         }
     }
 
-    // =========================
-    // HANDLE MESSAGES
-    // =========================
     private void handleMessage(Message msg) throws Exception {
 
         switch (msg.type) {
-
-            // =========================
-            // AUTH RESPONSE FROM SERVER
-            // =========================
             case AUTH:
                 System.out.println("Received AUTH");
 
@@ -97,14 +79,12 @@ public class PeerClient {
                 peerPublicKey = kf.generatePublic(
                         new X509EncodedKeySpec(peerKeyBytes));
 
-                // Derive session key
                 sessionKey = CryptoUtils.deriveSharedKey(
                         keyManager.getPrivateKey(),
                         peerPublicKey);
 
                 System.out.println("Session key established");
 
-                // Send challenge
                 byte[] challenge = new byte[32];
                 new SecureRandom().nextBytes(challenge);
 
@@ -120,9 +100,6 @@ public class PeerClient {
                 send(new Message(MessageType.AUTH, payload));
                 break;
 
-            // =========================
-            // FILE LIST
-            // =========================
             case FILE_LIST:
                 System.out.println("\nAvailable files:");
 
@@ -132,9 +109,6 @@ public class PeerClient {
                 }
                 break;
 
-            // =========================
-            // FILE TRANSFER
-            // =========================
             case FILE_TRANSFER:
                 handleFileTransfer(msg.payload);
                 break;
@@ -149,9 +123,6 @@ public class PeerClient {
         }
     }
 
-    // =========================
-    // HANDLE FILE
-    // =========================
     private void handleFileTransfer(JSONObject payload) throws Exception {
 
         byte[] encrypted = Base64.getDecoder()
@@ -194,16 +165,11 @@ public class PeerClient {
         System.out.println("File downloaded securely!");
     }
 
-    // =========================
-    // REQUEST FILE LIST
-    // =========================
     public void requestFileList() throws Exception {
         send(new Message(MessageType.FILE_LIST, new JSONObject()));
     }
 
-    // =========================
-    // REQUEST FILE
-    // =========================
+
     public void requestFile(String filename) throws Exception {
         JSONObject payload = new JSONObject();
         payload.put("filename", filename);
@@ -211,18 +177,12 @@ public class PeerClient {
         send(new Message(MessageType.FILE_REQUEST, payload));
     }
 
-    // =========================
-    // SEND MESSAGE
-    // =========================
     private void send(Message msg) throws Exception {
         out.write(msg.toJSON());
         out.newLine();
         out.flush();
     }
 
-    // =========================
-    // DECRYPT
-    // =========================
     private byte[] decrypt(SecretKey key, byte[] data, byte[] iv) throws Exception {
         javax.crypto.Cipher cipher =
                 javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
