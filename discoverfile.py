@@ -1,4 +1,4 @@
-rom zeroconf import Zeroconf, ServiceInfo, ServiceBrowser
+from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser
 import socket
 import time
 
@@ -66,19 +66,16 @@ class PeerListener:
         pass
 
 
-# =========================
-# DISCOVER PEERS
-# =========================
+# Discovering peers.
 def discover_peers(timeout=5):
     zeroconf = Zeroconf()
     listener = PeerListener()
 
     ServiceBrowser(zeroconf, SERVICE_TYPE, listener)
 
-    print("[DISCOVERY] Searching for peers...")
+    print("[DISCOVERY] Searching for nearby peers...")
     time.sleep(timeout)
 
     zeroconf.close()
 
     return list(listener.peers)
-
