@@ -67,7 +67,7 @@ def send_message(conn, data):
 
 
 class NetworkPeer:
-    def __init__(self, host="0.0.0.0", port=5000):
+    def __init__(self, host="0.0.0.0", port=5001):
         self.host = host
         self.port = port
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
