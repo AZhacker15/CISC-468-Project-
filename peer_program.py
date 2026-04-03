@@ -1,8 +1,9 @@
 import os.path
 import threading
 import base64
+import time
 
-from network_file import NetworkPeer, send_json
+from network_file import NetworkPeer, send_json, recv_json
 from crypto_util import (
     generate_keypair, sign_data, verify_signature,
     encrypt_data, decrypt_data,
@@ -60,7 +61,7 @@ class securePeer(NetworkPeer):
 
         self.private_key, self.public_key = generate_keypair()
 
-        for conn in list(self.connections):
+        for conn in list(getattr(self, "connections", [])):
             try:
                 send_json(conn, {
                     "type": "KEY_UPDATE",
@@ -68,8 +69,8 @@ class securePeer(NetworkPeer):
                         serialize_public_key(self.public_key)
                     ).decode()
                 })
-            except:
-                pass
+            except Exception as e:
+                print("[KEY MIGRATION ERROR]", e)
 
         print("[KEY MIGRATION] New keys active.")
 
@@ -78,7 +79,8 @@ class securePeer(NetworkPeer):
             new_key_bytes = base64.b64decode(data["public_key"])
             new_key = load_public_key(new_key_bytes)
 
-            self.known_peers[conn.getpeername()] = new_key
+            peer_addr = conn.getpeername()
+            self.known_peers[peer_addr] = new_key
 
             print("[KEY UPDATE] Peer rotated identity key.")
         except Exception as e:
@@ -131,7 +133,7 @@ class securePeer(NetworkPeer):
             peer_public = load_ephemeral_public(peer_eph_bytes)
 
             session_key = derive_shared_key(conn.eph_private, peer_public)
-            conn.session_key = session_key
+            setattr(conn, "session_key", session_key)
 
         except Exception as e:
             print("[KEY_EXCHANGE_REPLY ERROR]", e)
@@ -139,31 +141,39 @@ class securePeer(NetworkPeer):
     def handle_receive_file(self, conn, data):
         file = data["filename"]
 
-        user_choice = input(f"Accept the file '{file}' Y/N: ")
+        user_choice = "y"  # I will implement a queue system later.
+
         if user_choice.lower() != 'y':
             send_json(conn, {"type": "ERROR", "message": "Rejected"})
             return
 
-        if not hasattr(conn, "session_key"):
+        session_key = getattr(conn, "session_key", None)
+        if not session_key:
             print("ERROR No secure session established")
             return
 
         encrypted_data = base64.b64decode(data["data"])
         signature_data = base64.b64decode(data["signature"])
-        peer_pubic_key = load_public_key(base64.b64decode(data["public_key"]))
 
-        plaintext = decrypt_data(conn.session_key, encrypted_data)
+        peer_addr = conn.getpeername()
+        peer_public_key = self.known_peers.get(peer_addr)
+
+        if not peer_public_key:
+            print("ERROR: Unknown peer (no identity key stored)")
+            return
+
+        plaintext = decrypt_data(session_key, encrypted_data)
 
         if compute_hash(plaintext) != data["hash"]:
             print("ERROR: File has been tampered.")
             return
 
-        if not verify_signature(peer_pubic_key, plaintext, signature_data):
+        if not verify_signature(peer_public_key, plaintext, signature_data):
             print("ERROR: Signature is invalid.")
             return
 
-        write_file(file, plaintext)
-        print(f"[FILE] {file} has been received to user")
+        write_file(file + ".enc", encrypted_data)
+        print(f"[FILE] {file} has been securely stored on storage.")
 
     def handle_send_file(self, conn, data):
         if not hasattr(conn, "session_key"):
@@ -224,35 +234,47 @@ def main():
 
             send_json(conn, {"type": "REQUEST_FILE_LIST"})
 
-            response = conn.recv(4096)
+            response = recv_json(conn)
             if not response:
                 print("[ERROR] No response from peer")
             else:
-                data = response.decode()
-
                 print("\n[REMOTE FILE LIST]")
-                print(data)
+                print(response.get("files", response))
 
         elif choice == "3":
             ip = input("Peer IP: ")
             filename = input("Filename: ")
 
-            conn = peer.connect_to_peer(ip, peer.port, peer.private_key, peer.public_key)
+            conn = peer.connect_to_peer(
+                ip, peer.port, peer.private_key, peer.public_key
+            )
+            time.sleep(1)
 
             send_json(conn, {
                 "type": "REQUEST_FILE",
                 "filename": filename
             })
+
             print("[INFO] File request sent... waiting for transfer")
+            conn.settimeout(10)
 
-            # Wait for response (important!)
-            response = conn.recv(8192)
+            while True:
+                try:
+                    response = recv_json(conn)
+                except:
+                    print("[ERROR] User Timeout or disconnect")
+                    break
 
-            if not response:
-                print("[ERROR] No response from peer")
-            else:
-                print("[RESPONSE]")
-                print(response.decode())
+                if not response:
+                    break
+
+                if response["type"] == "SEND_FILE":
+                    print("[FILE RECEIVED]", response["filename"])
+                    break
+
+                elif response["type"] == "ERROR":
+                    print("[SERVER ERROR]", response.get("message"))
+                    break
 
         elif choice == "4":
             files = list_files()
@@ -272,4 +294,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
