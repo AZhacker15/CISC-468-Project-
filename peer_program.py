@@ -142,10 +142,14 @@ class securePeer(NetworkPeer):
         except FileNotFoundError:
             send_json(conn, {"type": "ERROR", "message": "File not found"})
             return
-
+        choice = input(f"Accept file transfer '{filename}'? (y/n): ")
+        if choice.lower() != 'y':
+            send_json(conn, {"type": "ERROR", "message": "Rejected"})
+            return
         encrypted = encrypt_data(session_key, file_data)
         file_hash = compute_hash(file_data)
         signature = sign_data(self.private_key, file_data)
+
 
         send_json(conn, {
             "type": "SEND_FILE",
