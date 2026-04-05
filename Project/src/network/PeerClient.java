@@ -1,29 +1,24 @@
 package network;
 
-import java.net.*;
-import java.io.*;
-import java.security.*;
-import java.security.spec.*;
-import java.util.Base64;
+import crypto.CryptoUtils;
+import crypto.KeyManager;
 
 import javax.crypto.SecretKey;
-import file.FileManager;
-
+import javax.crypto.spec.SecretKeySpec;
+import java.io.*;
+import java.net.Socket;
+import java.security.*;
+import java.util.Base64;
 import org.json.JSONObject;
-
-import crypto.*;
+import org.json.JSONArray;
 
 public class PeerClient {
-
     private Socket socket;
-    private BufferedReader in;
-    private BufferedWriter out;
-
+    private InputStream in;
+    private OutputStream out;
     private KeyManager keyManager;
-
-    private PublicKey peerPublicKey;
     private SecretKey sessionKey;
-    private boolean authenticated = false;
+    private PublicKey peerIdentityKey;
 
     public PeerClient(KeyManager keyManager) {
         this.keyManager = keyManager;
@@ -31,166 +26,143 @@ public class PeerClient {
 
     public void connect(String host, int port) throws Exception {
         socket = new Socket(host, port);
+        in = socket.getInputStream();
+        out = socket.getOutputStream();
+        System.out.println("Connected to " + host + ":" + port);
 
-        in = new BufferedReader(
-                new InputStreamReader(socket.getInputStream()));
-        out = new BufferedWriter(
-                new OutputStreamWriter(socket.getOutputStream()));
-
-        System.out.println("Connected to peer");
-
-        sendHello();
+        performKeyExchange();
         new Thread(this::listen).start();
     }
 
-    private void sendHello() throws Exception {
-        JSONObject payload = new JSONObject();
+    private void performKeyExchange() throws Exception {
+        System.out.println("Sending KEY_EXCHANGE");
 
-        payload.put("publicKey", Base64.getEncoder()
-                .encodeToString(keyManager.getPublicKey().getEncoded()));
 
-        send(new Message(MessageType.HELLO, payload));
+        KeyPair ephemeral = CryptoUtils.generateX25519KeyPair();
+        byte[] rawEphPub = CryptoUtils.getRawX25519PublicKey(ephemeral.getPublic());
+        System.out.println("Identity key length: " + keyManager.getRawPublicKey().length);
+        System.out.println("Ephemeral key length: " + rawEphPub.length);
+        byte[] signature = CryptoUtils.signEd25519(keyManager.getPrivateKey(), rawEphPub);
+
+        JSONObject fields = new JSONObject();
+        fields.put("eph_key", Base64.getEncoder().encodeToString(rawEphPub));
+        fields.put("identity_key", Base64.getEncoder().encodeToString(keyManager.getRawPublicKey()));
+        fields.put("signature", Base64.getEncoder().encodeToString(signature));
+        send(new Message("KEY_EXCHANGE", fields));
+
+        Message reply = Message.readFromStream(in);
+        socket.setSoTimeout(5000);
+        System.out.println("Received: " + reply.type);
+        if ("ERROR".equals(reply.type)) {
+            throw new RuntimeException("Peer rejected key exchange: " + reply.fields.getString("message"));
+        }
+        if (!"KEY_EXCHANGE_REPLY".equals(reply.type)) {
+            throw new RuntimeException("Expected KEY_EXCHANGE_REPLY, got " + reply.type);
+        }
+
+        byte[] peerRawEphPub = Base64.getDecoder().decode(reply.fields.getString("eph_key"));
+        byte[] peerRawIdPub = Base64.getDecoder().decode(reply.fields.getString("identity_key"));
+        byte[] peerSig = Base64.getDecoder().decode(reply.fields.getString("signature"));
+
+        PublicKey peerIdKey = CryptoUtils.decodeEd25519PublicKey(peerRawIdPub);
+        boolean valid = CryptoUtils.verifyEd25519(peerIdKey, peerRawEphPub, peerSig);
+        if (!valid) throw new SecurityException("Peer authentication failed – invalid signature");
+
+        PublicKey peerEphPublic = CryptoUtils.decodeX25519PublicKey(peerRawEphPub);
+        byte[] sharedSecret = CryptoUtils.x25519SharedSecret(ephemeral.getPrivate(), peerEphPublic);
+        byte[] sessionKeyBytes = CryptoUtils.hkdf(sharedSecret, "p2p-file-transfer", 32);
+        sessionKey = new SecretKeySpec(sessionKeyBytes, "AES");
+        peerIdentityKey = peerIdKey;
+
+        System.out.println("Secure session established");
     }
+
 
     private void listen() {
         try {
-            String line;
-
-            while ((line = in.readLine()) != null) {
-                Message msg = Message.fromJSON(line);
+            while (true) {
+                Message msg = Message.readFromStream(in);
                 handleMessage(msg);
             }
-
+        } catch (EOFException e) {
+            System.out.println("Connection closed by peer");
         } catch (Exception e) {
-            System.out.println("Connection closed.");
+            System.err.println("Listener error: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
     private void handleMessage(Message msg) throws Exception {
-
         switch (msg.type) {
-            case AUTH:
-                System.out.println("Received AUTH");
-
-                byte[] peerKeyBytes = Base64.getDecoder()
-                        .decode(msg.payload.getString("publicKey"));
-
-                KeyFactory kf = KeyFactory.getInstance("EC");
-                peerPublicKey = kf.generatePublic(
-                        new X509EncodedKeySpec(peerKeyBytes));
-
-                sessionKey = CryptoUtils.deriveSharedKey(
-                        keyManager.getPrivateKey(),
-                        peerPublicKey);
-
-                System.out.println("Session key established");
-
-                byte[] challenge = new byte[32];
-                new SecureRandom().nextBytes(challenge);
-
-                byte[] signature = SignatureUtils.sign(
-                        keyManager.getPrivateKey(), challenge);
-
-                JSONObject payload = new JSONObject();
-                payload.put("challenge", Base64.getEncoder()
-                        .encodeToString(challenge));
-                payload.put("signature", Base64.getEncoder()
-                        .encodeToString(signature));
-
-                send(new Message(MessageType.AUTH, payload));
-                break;
-
-            case FILE_LIST:
+            case "FILE_LIST":
+                JSONArray files = msg.fields.getJSONArray("files");
                 System.out.println("\nAvailable files:");
-
-                for (Object o : msg.payload.getJSONArray("files")) {
-                    JSONObject f = (JSONObject) o;
-                    System.out.println("- " + f.getString("filename"));
+                for (int i = 0; i < files.length(); i++) {
+                    System.out.println("- " + files.getString(i));
                 }
                 break;
-
-            case FILE_TRANSFER:
-                handleFileTransfer(msg.payload);
+            case "SEND_FILE":
+                receiveFile(msg.fields);
                 break;
-
-            case ERROR:
-                System.out.println("Error: " +
-                        msg.payload.getString("error"));
+            case "ERROR":
+                System.err.println("Peer error: " + msg.fields.getString("message"));
                 break;
-
             default:
-                System.out.println("Unknown message");
+                System.out.println("Unhandled message type: " + msg.type);
         }
     }
 
-    private void handleFileTransfer(JSONObject payload) throws Exception {
+    private void receiveFile(JSONObject fields) throws Exception {
+        String filename = fields.getString("filename");
+        byte[] encryptedData = Base64.getDecoder().decode(fields.getString("data"));
+        String expectedHash = fields.getString("hash");
+        byte[] signature = Base64.getDecoder().decode(fields.getString("signature"));
+        byte[] pubKeyBytes = Base64.getDecoder().decode(fields.getString("public_key"));
 
-        byte[] encrypted = Base64.getDecoder()
-                .decode(payload.getString("data"));
+        PublicKey senderPub = CryptoUtils.decodeEd25519PublicKey(pubKeyBytes);
+        if (!senderPub.equals(peerIdentityKey)) {
+            System.err.println("Warning: file sender identity key differs from key exchange peer");
+        }
 
-        byte[] iv = Base64.getDecoder()
-                .decode(payload.getString("iv"));
+        byte[] plaintext = CryptoUtils.decryptAESGCM(sessionKey, encryptedData);
 
-        String hash = payload.getString("hash");
-
-        byte[] signature = Base64.getDecoder()
-                .decode(payload.getString("signature"));
-
-        byte[] decrypted = decrypt(sessionKey, encrypted, iv);
-
-        String computedHash = FileManager.computeHash(decrypted);
-
-        if (!computedHash.equals(hash)) {
-            System.out.println("File corrupted!");
+        String computedHash = bytesToHex(java.security.MessageDigest.getInstance("SHA-256").digest(plaintext));
+        if (!computedHash.equals(expectedHash)) {
+            System.err.println("File hash mismatch – possible corruption");
             return;
         }
 
-        boolean valid = SignatureUtils.verify(
-                peerPublicKey,
-                hash.getBytes(),
-                signature);
-
+        boolean valid = CryptoUtils.verifyEd25519(senderPub, plaintext, signature);
         if (!valid) {
-            System.out.println("Invalid signature!");
+            System.err.println("Invalid signature – file authenticity check failed");
             return;
         }
 
         new File("downloads").mkdirs();
-        FileOutputStream fos = new FileOutputStream(
-                "downloads/" + payload.getString("filename"));
-
-        fos.write(decrypted);
-        fos.close();
-
-        System.out.println("File downloaded securely!");
+        try (FileOutputStream fos = new FileOutputStream("downloads/" + filename)) {
+            fos.write(plaintext);
+        }
+        System.out.println("File '" + filename + "' downloaded and verified successfully.");
     }
 
     public void requestFileList() throws Exception {
-        send(new Message(MessageType.FILE_LIST, new JSONObject()));
+        send(new Message("REQUEST_FILE_LIST", new JSONObject()));
     }
 
-
     public void requestFile(String filename) throws Exception {
-        JSONObject payload = new JSONObject();
-        payload.put("filename", filename);
-
-        send(new Message(MessageType.FILE_REQUEST, payload));
+        JSONObject fields = new JSONObject();
+        fields.put("filename", filename);
+        send(new Message("REQUEST_FILE", fields));
     }
 
     private void send(Message msg) throws Exception {
-        out.write(msg.toJSON());
-        out.newLine();
+        out.write(msg.toBytes());
         out.flush();
     }
 
-    private byte[] decrypt(SecretKey key, byte[] data, byte[] iv) throws Exception {
-        javax.crypto.Cipher cipher =
-                javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
-
-        javax.crypto.spec.GCMParameterSpec spec =
-                new javax.crypto.spec.GCMParameterSpec(128, iv);
-
-        cipher.init(javax.crypto.Cipher.DECRYPT_MODE, key, spec);
-        return cipher.doFinal(data);
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
     }
 }

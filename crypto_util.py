@@ -7,6 +7,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey
 )
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import x25519
+
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes
 
 
 def generate_aes_key():
@@ -84,3 +88,35 @@ def verify_file(data, expected_hash, public_key, signature):
         return False
 
     return True
+
+
+# For perfect forward secrecy
+
+def generate_ephemeral_keypair():
+    private_key = x25519.X25519PrivateKey.generate()
+    public_key = private_key.public_key()
+    return private_key, public_key
+
+
+def serialize_ephemeral_public(public_key):
+    return public_key.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw
+    )
+
+
+def load_ephemeral_public(data):
+    return x25519.X25519PublicKey.from_public_bytes(data)
+
+
+def derive_shared_key(private_key, peer_public_key):
+    shared_secret = private_key.exchange(peer_public_key)
+
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b'p2p-file-transfer',
+    )
+
+    return hkdf.derive(shared_secret)

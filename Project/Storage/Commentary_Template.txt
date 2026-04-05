@@ -1,0 +1,41 @@
+Commentary Template
+
+Evaluated Group #:
+Project Title:
+
+⸻
+
+
+
+Strengths (2–3 bullet points)
+Each point should reference a specific aspect of the project (e.g., problem formulation, representation, fitness evaluation, variation operators, or observed behavior).
+	•	
+	•	
+	•	
+
+⸻
+
+
+
+Constructive Question or Observation (1–2 sentences)
+Provide one thoughtful question or suggestion that reflects engagement with the design (e.g., alternative approach, limitation, trade-off, or potential improvement).
+	•	
+
+⸻
+
+
+
+Optional: Observed Limitation or Challenge (1 bullet)
+Briefly note any limitation, assumption, or area where the approach may struggle.
+	•	
+
+⸻
+
+
+
+
+Guidelines
+	•	Focus on design and reasoning, not presentation style
+	•	Be specific and constructive
+	•	Do not assign scores or grades
+	•	Keep your commentary concise (approximately 100–150 words)

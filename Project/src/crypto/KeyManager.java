@@ -6,9 +6,7 @@ public class KeyManager {
     private KeyPair keyPair;
 
     public void loadOrCreateKeys() throws Exception {
-        KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
-        kpg.initialize(256);
-        keyPair = kpg.generateKeyPair();
+        keyPair = CryptoUtils.generateEd25519KeyPair();
     }
 
     public PublicKey getPublicKey() {
@@ -17,5 +15,9 @@ public class KeyManager {
 
     public PrivateKey getPrivateKey() {
         return keyPair.getPrivate();
+    }
+
+    public byte[] getRawPublicKey() {
+        return CryptoUtils.getRawEd25519PublicKey(keyPair.getPublic());
     }
 }

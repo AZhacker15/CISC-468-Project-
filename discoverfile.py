@@ -5,11 +5,23 @@ import time
 SERVICE_TYPE = "_p2pfileshare._tcp.local."
 
 
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
+
 def register_service(port):
     zeroconf = Zeroconf()
 
     hostname = socket.gethostname()
-    ip = socket.gethostbyname(hostname)
+    ip = get_local_ip()
 
     info = ServiceInfo(
         SERVICE_TYPE,
@@ -25,36 +37,41 @@ def register_service(port):
     return zeroconf, info
 
 
-# Discover peers
 
 class PeerListener:
     def __init__(self):
-        self.peers = []
+        self.peers = set()
 
     def add_service(self, zeroconf, type, name):
         info = zeroconf.get_service_info(type, name)
-        if info:
-            ip = socket.inet_ntoa(info.addresses[0])
-            port = info.port
+        if not info:
+            return
 
-            peer = (ip, port)
-            if peer not in self.peers:
-                self.peers.append(peer)
-                print(f"[FOUND PEER] {ip}:{port}")
+        ip = socket.inet_ntoa(info.addresses[0])
+        port = info.port
+
+        peer = (ip, port)
+
+        if peer not in self.peers:
+            self.peers.add(peer)
+            print(f"[FOUND PEER] {ip}:{port}")
+
+    def update_service(self, zeroconf, type, name):
+        self.add_service(zeroconf, type, name)
 
     def remove_service(self, zeroconf, type, name):
-        pass  # optional
+        pass
 
 
 def discover_peers(timeout=5):
     zeroconf = Zeroconf()
     listener = PeerListener()
 
-    browser = ServiceBrowser(zeroconf, SERVICE_TYPE, listener)
+    ServiceBrowser(zeroconf, SERVICE_TYPE, listener)
 
-    print("[DISCOVERY] Searching for peers...")
+    print("[DISCOVERY] Searching for nearby peers...")
     time.sleep(timeout)
 
     zeroconf.close()
 
-    return listener.peers
+    return list(listener.peers)
