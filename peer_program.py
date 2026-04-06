@@ -1,9 +1,8 @@
 import os.path
 import threading
 import base64
-import time
 
-from network_file import NetworkPeer, send_json, recv_json
+from network_file import NetworkPeer, send_json, recv_json, get_session_data
 from crypto_util import (
     generate_keypair, sign_data, verify_signature,
     encrypt_data, decrypt_data,
@@ -19,176 +18,154 @@ from discoverfile import register_service, discover_peers
 class securePeer(NetworkPeer):
     def __init__(self, host="0.0.0.0", port=5001):
         super().__init__(host, port)
-
         self.private_key, self.public_key = generate_keypair()
         self.known_peers = {}
 
     def handle_message(self, conn, data):
-        message_type = data.get("type")
+        # print("test")
+        conn_info = get_session_data(conn)
+        # print("test2")
+        # print(f"[DEBUG] handle_message: conn id={id(conn)}, conn_info={conn_info is not None}")
+        if conn_info is None:
+            send_json(conn, {"type": "ERROR", "message": "Internal error"})
+            return
+        # print("test3")
+        msg_type = data.get("type")
+        if msg_type != "KEY_EXCHANGE":
+            if "session_key" not in conn_info or "peer_identity_key" not in conn_info:
+                send_json(conn, {"type": "ERROR", "message": "Not authenticated"})
+                return
 
-        if message_type == "PING":
+        print(f"[DEBUG] Received {msg_type}")
+
+        if msg_type == "PING":
             send_json(conn, {"type": "PONG"})
-
-        elif message_type == "REQUEST_FILE_LIST":
-            send_json(conn, {
-                "type": "FILE_LIST",
-                "files": list_files()
-            })
-
-        elif message_type == "SEND_FILE":
-            self.handle_receive_file(conn, data)
-
-        elif message_type == "REQUEST_FILE":
+        elif msg_type == "REQUEST_FILE_LIST":
+            send_json(conn, {"type": "FILE_LIST", "files": list_files()})
+        elif msg_type == "REQUEST_FILE":
             self.handle_send_file(conn, data)
-
-        elif message_type == "KEY_EXCHANGE":
+        elif msg_type == "SEND_FILE":
+            self.handle_receive_file(conn, data)
+        elif msg_type == "KEY_EXCHANGE":
             self.handle_key_exchange(conn, data)
-
-        elif message_type == "KEY_EXCHANGE_REPLY":
-            self.handle_key_exchange_reply(conn, data)
-
-        elif message_type == "KEY_UPDATE":
-            self.handle_key_update(conn, data)
-
         else:
             send_json(conn, {"type": "ERROR", "message": "Unknown request"})
 
-    def rotate_keys(self):
-        """
-        Generate a new identity keypair and notify peers.
-        """
-        print("[KEY MIGRATION] Rotating identity keys...")
-
-        self.private_key, self.public_key = generate_keypair()
-
-        for conn in list(getattr(self, "connections", [])):
-            try:
-                send_json(conn, {
-                    "type": "KEY_UPDATE",
-                    "public_key": base64.b64encode(
-                        serialize_public_key(self.public_key)
-                    ).decode()
-                })
-            except Exception as e:
-                print("[KEY MIGRATION ERROR]", e)
-
-        print("[KEY MIGRATION] New keys active.")
-
-    def handle_key_update(self, conn, data):
-        try:
-            new_key_bytes = base64.b64decode(data["public_key"])
-            new_key = load_public_key(new_key_bytes)
-
-            peer_addr = conn.getpeername()
-            self.known_peers[peer_addr] = new_key
-
-            print("[KEY UPDATE] Peer rotated identity key.")
-        except Exception as e:
-            print("[KEY UPDATE ERROR]", e)
-
     def handle_key_exchange(self, conn, data):
         try:
+            # print("[KEY_EXCHANGE] Starting")
+
+            conn_info = get_session_data(conn)
+            if conn_info is None:
+                raise RuntimeError("No session data")
             peer_eph_bytes = base64.b64decode(data["eph_key"])
             peer_identity_bytes = base64.b64decode(data["identity_key"])
             signature = base64.b64decode(data["signature"])
+            # print(f"[DEBUG] eph len: {len(peer_eph_bytes)}")
+            # print(f"[DEBUG] id len: {len(peer_identity_bytes)}")
 
-            peer_identity_key = load_public_key(peer_identity_bytes)
-
-            # verify peer identity signed their ephemeral key
-            if not verify_signature(peer_identity_key, peer_eph_bytes, signature):
-                send_json(conn, {"type": "ERROR", "message": "Auth failed"})
-                conn.close()
+            if len(peer_eph_bytes) != 32 or len(peer_identity_bytes) != 32:
+                send_json(conn, {"type": "ERROR", "message": "Invalid key length"})
                 return
 
-            peer_public = load_ephemeral_public(peer_eph_bytes)
+            peer_identity_key = load_public_key(peer_identity_bytes)
+            if not verify_signature(peer_identity_key, peer_eph_bytes, signature):
+                send_json(conn, {"type": "ERROR", "message": "Authentication failed"})
+                return
 
-            # generate our ephemeral key
             eph_private, eph_public = generate_ephemeral_keypair()
+            peer_ephemeral = load_ephemeral_public(peer_eph_bytes)
+            session_key = derive_shared_key(eph_private, peer_ephemeral)
 
-            conn.eph_private = eph_private
+            conn_info["peer_identity_key"] = peer_identity_key
+            conn_info["session_key"] = session_key
 
-            session_key = derive_shared_key(eph_private, peer_public)
-            conn.session_key = session_key
+            our_eph_pub = serialize_ephemeral_public(eph_public)
+            our_signature = sign_data(self.private_key, our_eph_pub)
 
             send_json(conn, {
                 "type": "KEY_EXCHANGE_REPLY",
-                "eph_key": base64.b64encode(
-                    serialize_ephemeral_public(eph_public)
-                ).decode(),
-                "identity_key": base64.b64encode(
-                    serialize_public_key(self.public_key)
-                ).decode(),
-                "signature": base64.b64encode(
-                    sign_data(self.private_key, serialize_ephemeral_public(eph_public))
-                ).decode()
+                "eph_key": base64.b64encode(our_eph_pub).decode(),
+                "identity_key": base64.b64encode(serialize_public_key(self.public_key)).decode(),
+                "signature": base64.b64encode(our_signature).decode()
             })
 
-        except Exception as e:
-            print("[KEY_EXCHANGE ERROR]", e)
-
-    def handle_key_exchange_reply(self, conn, data):
-        try:
-            peer_eph_bytes = base64.b64decode(data["eph_key"])
-
-            peer_public = load_ephemeral_public(peer_eph_bytes)
-
-            session_key = derive_shared_key(conn.eph_private, peer_public)
-            setattr(conn, "session_key", session_key)
+            # print("[KEY_EXCHANGE] Success")
 
         except Exception as e:
-            print("[KEY_EXCHANGE_REPLY ERROR]", e)
+            print(f"[KEY_EXCHANGE ERROR] {e}")
+            import traceback
+            traceback.print_exc()
+            send_json(conn, {"type": "ERROR", "message": f"Key exchange failed: {str(e)}"})
+            conn.close()
 
     def handle_receive_file(self, conn, data):
-        file = data["filename"]
-
-        user_choice = "y"  # I will implement a queue system later.
-
-        if user_choice.lower() != 'y':
-            send_json(conn, {"type": "ERROR", "message": "Rejected"})
+        conn_info = get_session_data(conn)
+        if not conn_info or "session_key" not in conn_info or "peer_identity_key" not in conn_info:
+            send_json(conn, {"type": "ERROR", "message": "No secure session"})
             return
 
-        session_key = getattr(conn, "session_key", None)
-        if not session_key:
-            print("ERROR No secure session established")
+        if conn_info.get("receiving"):
+            return
+        conn_info["receiving"] = True
+
+        session_key = conn_info["session_key"]
+        peer_public_key = conn_info["peer_identity_key"]
+
+        filename = data["filename"]
+
+        print(f"\n[REQUEST] Incoming file to user: {filename}")
+        choice = input("[PROMPT] Accept File? (y/n): ")
+
+        if choice.lower() != 'y':
+            send_json(conn, {"type": "ERROR", "message": "Rejected"})
+            conn_info["receiving"] = False
             return
 
         encrypted_data = base64.b64decode(data["data"])
         signature_data = base64.b64decode(data["signature"])
 
-        peer_addr = conn.getpeername()
-        peer_public_key = self.known_peers.get(peer_addr)
-
-        if not peer_public_key:
-            print("ERROR: Unknown peer (no identity key stored)")
-            return
-
         plaintext = decrypt_data(session_key, encrypted_data)
 
         if compute_hash(plaintext) != data["hash"]:
-            print("ERROR: File has been tampered.")
+            print("ERROR: File hash mismatch")
+            conn_info["receiving"] = False
             return
 
         if not verify_signature(peer_public_key, plaintext, signature_data):
-            print("ERROR: Signature is invalid.")
+            print("ERROR: Invalid signature")
+            conn_info["receiving"] = False
             return
 
-        write_file(file + ".enc", encrypted_data)
-        print(f"[FILE] {file} has been securely stored on storage.")
+        write_file(filename + ".enc", encrypted_data)
+        print(f"[FILE] Received {filename} securely")
+        conn_info["receiving"] = False 
 
     def handle_send_file(self, conn, data):
-        if not hasattr(conn, "session_key"):
+        conn_info = get_session_data(conn)
+        if not conn_info or "session_key" not in conn_info:
             send_json(conn, {"type": "ERROR", "message": "No session"})
             return
 
+        session_key = conn_info["session_key"]
         filename = data["filename"]
 
         try:
             file_data = read_file(filename)
-        except:
+        except FileNotFoundError:
             send_json(conn, {"type": "ERROR", "message": "File not found"})
+            conn_info["sending"] = False
             return
 
-        encrypted = encrypt_data(conn.session_key, file_data)
+        print(f"\n[REQUEST] Send File: {filename}")
+        choice = input(f"[PROMPT] Accept file transfer?: (y/n): ")
+
+        if choice.lower() != 'y':
+            send_json(conn, {"type": "ERROR", "message": "Rejected"})
+            conn_info["sending"] = False
+            return
+
+        encrypted = encrypt_data(session_key, file_data)
         file_hash = compute_hash(file_data)
         signature = sign_data(self.private_key, file_data)
 
@@ -198,19 +175,14 @@ class securePeer(NetworkPeer):
             "data": base64.b64encode(encrypted).decode(),
             "hash": file_hash,
             "signature": base64.b64encode(signature).decode(),
-            "public_key": base64.b64encode(
-                serialize_public_key(self.public_key)
-            ).decode()
+            "public_key": base64.b64encode(serialize_public_key(self.public_key)).decode()
         })
 
 
 def main():
     ensure_storage()
-
     peer = securePeer()
-
     threading.Thread(target=peer.start_server, daemon=True).start()
-
     register_service(peer.port)
 
     while True:
@@ -219,75 +191,55 @@ def main():
         print("3. Request File")
         print("4. View Local Files")
         print("5. Exit")
-
         choice = input("> ")
 
         if choice == "1":
             print(discover_peers())
-
         elif choice == "2":
             ip = input("Peer IP: ")
-
-            conn = peer.connect_to_peer(
-                ip, peer.port, peer.private_key, peer.public_key
-            )
-
+            conn = peer.connect_to_peer(ip, peer.port, peer.private_key, peer.public_key)
+            if not conn:
+                print("Connection failed")
+                continue
             send_json(conn, {"type": "REQUEST_FILE_LIST"})
-
             response = recv_json(conn)
-            if not response:
-                print("[ERROR] No response from peer")
-            else:
+            if response:
                 print("\n[REMOTE FILE LIST]")
                 print(response.get("files", response))
+            conn.close()
 
         elif choice == "3":
             ip = input("Peer IP: ")
             filename = input("Filename: ")
-
-            conn = peer.connect_to_peer(
-                ip, peer.port, peer.private_key, peer.public_key
-            )
-            time.sleep(1)
-
-            send_json(conn, {
-                "type": "REQUEST_FILE",
-                "filename": filename
-            })
-
-            print("[INFO] File request sent... waiting for transfer")
+            conn = peer.connect_to_peer(ip, peer.port, peer.private_key, peer.public_key)
+            if not conn:
+                print("Connection failed")
+                continue
+            send_json(conn, {"type": "REQUEST_FILE", "filename": filename})
             conn.settimeout(10)
-
             while True:
-                try:
-                    response = recv_json(conn)
-                except:
-                    print("[ERROR] User Timeout or disconnect")
-                    break
-
+                response = recv_json(conn)
                 if not response:
                     break
 
-                if response["type"] == "SEND_FILE":
-                    print("[FILE RECEIVED]", response["filename"])
+                if response.get("type") == "SEND_FILE":
+                    peer.handle_receive_file(conn, response)
                     break
-
-                elif response["type"] == "ERROR":
-                    print("[SERVER ERROR]", response.get("message"))
+                elif response.get("type") == "ERROR":
+                    print("[ERROR]", response.get("message"))
                     break
+            conn.close()
 
         elif choice == "4":
             files = list_files()
-
             if not files:
                 print("[LOCAL FILES] No files in Storage/")
             else:
                 print("\n[LOCAL FILES]")
                 for f in files:
                     path = get_file_path(f)
-                    file_size = os.path.getsize(path)
-                    print(f" -{f} ({file_size} bytes)")
-
+                    size = os.path.getsize(path)
+                    print(f" - {f} ({size} bytes)")
         elif choice == "5":
             break
 
