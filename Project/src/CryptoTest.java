@@ -76,7 +76,6 @@ public class CryptoTest {
         byte[] plaintext = "important".getBytes();
         byte[] encrypted = CryptoUtils.encryptAESGCM(key, plaintext);
 
-        // Tamper ciphertext
         encrypted[encrypted.length - 1] ^= 1;
 
         assertThrows(Exception.class, () ->

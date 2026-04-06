@@ -8,7 +8,7 @@ public class MainClient {
         KeyManager km = new KeyManager();
         km.loadOrCreateKeys();
         PeerClient client = new PeerClient(km);
-        client.connect("172.20.10.4", 5001);
+        client.connect("172.20.10.5", 5001);
         BufferedReader console = new BufferedReader(new InputStreamReader(System.in));
         while (true) {
             System.out.print("\nCommand (list/get <file>): ");

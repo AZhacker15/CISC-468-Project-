@@ -51,7 +51,6 @@ public class PeerClient {
         send(new Message("KEY_EXCHANGE", fields));
 
         Message reply = Message.readFromStream(in);
-        //socket.setSoTimeout(5000);
         System.out.println("Received: " + reply.type);
         if ("ERROR".equals(reply.type)) {
             throw new RuntimeException("Peer rejected key exchange: " + reply.fields.getString("message"));
