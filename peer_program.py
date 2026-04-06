@@ -1,7 +1,6 @@
 import os.path
 import threading
 import base64
-import time
 
 from network_file import NetworkPeer, send_json, recv_json, get_session_data
 from crypto_util import (
@@ -23,19 +22,21 @@ class securePeer(NetworkPeer):
         self.known_peers = {}
 
     def handle_message(self, conn, data):
-        #print("test")
+        # print("test")
         conn_info = get_session_data(conn)
-        #print("test2")
-        #print(f"[DEBUG] handle_message: conn id={id(conn)}, conn_info={conn_info is not None}")
+        # print("test2")
+        # print(f"[DEBUG] handle_message: conn id={id(conn)}, conn_info={conn_info is not None}")
         if conn_info is None:
             send_json(conn, {"type": "ERROR", "message": "Internal error"})
             return
-        #print("test3")
+        # print("test3")
         msg_type = data.get("type")
         if msg_type != "KEY_EXCHANGE":
             if "session_key" not in conn_info or "peer_identity_key" not in conn_info:
                 send_json(conn, {"type": "ERROR", "message": "Not authenticated"})
                 return
+
+        print(f"[DEBUG] Received {msg_type}")
 
         if msg_type == "PING":
             send_json(conn, {"type": "PONG"})
@@ -52,7 +53,7 @@ class securePeer(NetworkPeer):
 
     def handle_key_exchange(self, conn, data):
         try:
-            #print("[KEY_EXCHANGE] Starting")
+            # print("[KEY_EXCHANGE] Starting")
 
             conn_info = get_session_data(conn)
             if conn_info is None:
@@ -60,8 +61,8 @@ class securePeer(NetworkPeer):
             peer_eph_bytes = base64.b64decode(data["eph_key"])
             peer_identity_bytes = base64.b64decode(data["identity_key"])
             signature = base64.b64decode(data["signature"])
-            #print(f"[DEBUG] eph len: {len(peer_eph_bytes)}")
-            #print(f"[DEBUG] id len: {len(peer_identity_bytes)}")
+            # print(f"[DEBUG] eph len: {len(peer_eph_bytes)}")
+            # print(f"[DEBUG] id len: {len(peer_identity_bytes)}")
 
             if len(peer_eph_bytes) != 32 or len(peer_identity_bytes) != 32:
                 send_json(conn, {"type": "ERROR", "message": "Invalid key length"})
@@ -89,7 +90,7 @@ class securePeer(NetworkPeer):
                 "signature": base64.b64encode(our_signature).decode()
             })
 
-            #print("[KEY_EXCHANGE] Success")
+            # print("[KEY_EXCHANGE] Success")
 
         except Exception as e:
             print(f"[KEY_EXCHANGE ERROR] {e}")
@@ -97,19 +98,28 @@ class securePeer(NetworkPeer):
             traceback.print_exc()
             send_json(conn, {"type": "ERROR", "message": f"Key exchange failed: {str(e)}"})
             conn.close()
+
     def handle_receive_file(self, conn, data):
         conn_info = get_session_data(conn)
         if not conn_info or "session_key" not in conn_info or "peer_identity_key" not in conn_info:
             send_json(conn, {"type": "ERROR", "message": "No secure session"})
             return
 
+        if conn_info.get("receiving"):
+            return
+        conn_info["receiving"] = True
+
         session_key = conn_info["session_key"]
         peer_public_key = conn_info["peer_identity_key"]
 
         filename = data["filename"]
-        choice = input(f"Accept file '{filename}'? (y/n): ")
+
+        print(f"\n[REQUEST] Incoming file to user: {filename}")
+        choice = input("[PROMPT] Accept File? (y/n): ")
+
         if choice.lower() != 'y':
             send_json(conn, {"type": "ERROR", "message": "Rejected"})
+            conn_info["receiving"] = False
             return
 
         encrypted_data = base64.b64decode(data["data"])
@@ -119,14 +129,17 @@ class securePeer(NetworkPeer):
 
         if compute_hash(plaintext) != data["hash"]:
             print("ERROR: File hash mismatch")
+            conn_info["receiving"] = False
             return
 
         if not verify_signature(peer_public_key, plaintext, signature_data):
             print("ERROR: Invalid signature")
+            conn_info["receiving"] = False
             return
 
         write_file(filename + ".enc", encrypted_data)
         print(f"[FILE] Received {filename} securely")
+        conn_info["receiving"] = False 
 
     def handle_send_file(self, conn, data):
         conn_info = get_session_data(conn)
@@ -141,15 +154,20 @@ class securePeer(NetworkPeer):
             file_data = read_file(filename)
         except FileNotFoundError:
             send_json(conn, {"type": "ERROR", "message": "File not found"})
+            conn_info["sending"] = False
             return
-        choice = input(f"Accept file transfer '{filename}'? (y/n): ")
+
+        print(f"\n[REQUEST] Send File: {filename}")
+        choice = input(f"[PROMPT] Accept file transfer?: (y/n): ")
+
         if choice.lower() != 'y':
             send_json(conn, {"type": "ERROR", "message": "Rejected"})
+            conn_info["sending"] = False
             return
+
         encrypted = encrypt_data(session_key, file_data)
         file_hash = compute_hash(file_data)
         signature = sign_data(self.private_key, file_data)
-
 
         send_json(conn, {
             "type": "SEND_FILE",
@@ -189,6 +207,7 @@ def main():
                 print("\n[REMOTE FILE LIST]")
                 print(response.get("files", response))
             conn.close()
+
         elif choice == "3":
             ip = input("Peer IP: ")
             filename = input("Filename: ")
@@ -198,15 +217,19 @@ def main():
                 continue
             send_json(conn, {"type": "REQUEST_FILE", "filename": filename})
             conn.settimeout(10)
-            try:
+            while True:
                 response = recv_json(conn)
-                if response and response.get("type") == "SEND_FILE":
-                    print(f"[FILE RECEIVED] {response['filename']}")
-                elif response and response.get("type") == "ERROR":
-                    print(f"[ERROR] {response.get('message')}")
-            except Exception as e:
-                print(f"Error: {e}")
+                if not response:
+                    break
+
+                if response.get("type") == "SEND_FILE":
+                    peer.handle_receive_file(conn, response)
+                    break
+                elif response.get("type") == "ERROR":
+                    print("[ERROR]", response.get("message"))
+                    break
             conn.close()
+
         elif choice == "4":
             files = list_files()
             if not files:

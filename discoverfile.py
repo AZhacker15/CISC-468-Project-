@@ -8,6 +8,7 @@ SERVICE_TYPE = "_p2pfileshare._tcp.local."
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        # doesn't actually send data
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
     except Exception:
@@ -37,6 +38,7 @@ def register_service(port):
     return zeroconf, info
 
 
+# Discover peers
 
 class PeerListener:
     def __init__(self):
@@ -56,6 +58,7 @@ class PeerListener:
             self.peers.add(peer)
             print(f"[FOUND PEER] {ip}:{port}")
 
+    # IMPORTANT FIX (removes warning)
     def update_service(self, zeroconf, type, name):
         self.add_service(zeroconf, type, name)
 
@@ -63,6 +66,7 @@ class PeerListener:
         pass
 
 
+# Discovering peers.
 def discover_peers(timeout=5):
     zeroconf = Zeroconf()
     listener = PeerListener()
