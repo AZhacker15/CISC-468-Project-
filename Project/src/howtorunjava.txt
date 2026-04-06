@@ -1,0 +1,3 @@
+-To run java side
+-Make sure the jar files are added
+-Run MainClient.java
