@@ -7,6 +7,7 @@ from crypto_util import generate_ephemeral_keypair, derive_shared_key
 
 
 def test_encryption_and_decryption():
+    # Testing the encryption process.
     key = generate_aes_key()
     data_type = b"Hello this is a test"
 
@@ -17,6 +18,7 @@ def test_encryption_and_decryption():
 
 
 def test_ciphertext_is_tampered():
+    # Testing if the cipher text is tampered
     key = generate_aes_key()
     data_type = b"This data will be tampered"
 
@@ -29,12 +31,14 @@ def test_ciphertext_is_tampered():
         decrypt_data(key, bytes(tampered_text))
         print("Successfully decrypted file [not expected]")
         assert False
+
     except Exception:
         print("Decryption has failed; as expected")
         assert True
 
 
 def test_valid_hash():
+    # Testing a valid hash.
     data = b"My hash"
 
     hash1 = compute_hash(data)
@@ -44,6 +48,7 @@ def test_valid_hash():
 
 
 def test_hash_tampered():
+    # Testing if the has has been tampered.
     data1 = b"File type a"
     data2 = b"File type b"
 
@@ -54,6 +59,7 @@ def test_hash_tampered():
 
 
 def test_valid_signature():
+    # Testing a valid signature.
     private_key, public_key = generate_keypair()
     data = b"Message"
 
@@ -63,6 +69,7 @@ def test_valid_signature():
 
 
 def test_invalid_signature():
+    # Testing if the signature has been tampered.
     private_key1, public_key1 = generate_keypair()
     private_key2, public_key2 = generate_keypair()
     data = b"Invalid File"
@@ -73,6 +80,7 @@ def test_invalid_signature():
 
 
 def test_file_storage_encrypted():
+    # Checking if the data in the storage is encrypted
     from crypto_util import generate_aes_key, encrypt_data
 
     filename = "secure.txt"
@@ -115,3 +123,17 @@ def test_mitm_attack_fail():
 
     assert not verify_signature(alice_public, eph_key, fake_user_signature)
     print("MITM attack has failed.")
+
+
+def test_replay_attack():
+    # One of the unfortunate limitations found duw to time constraints.
+    key = generate_aes_key()
+    data = b"file"
+
+    encrypted = encrypt_data(key, data)
+
+    # replay same message twice
+    decrypted1 = decrypt_data(key, encrypted)
+    decrypted2 = decrypt_data(key, encrypted)
+
+    assert decrypted1 == decrypted2
