@@ -1,0 +1,9 @@
+How to run the python client:
+On the python client the user will be greeted with a menu, displaying text that allows them to choose the following options.
+1. Discover Existing Peers (Finds other peers in a local lan)
+2. Request File List (As a client request permission to look at the server's shared files)  
+3. Request File (Request a file as a client) 
+4. View Local Files (View any local files present locally on the device)
+5. Exit 
+When requesting a file the client would need to first enter the peer's IP address and the file in question if they want it. 
+When acting as a server, a client will automatically send a request to send them the file, in which you will prompt to give it in a yes or no. 
